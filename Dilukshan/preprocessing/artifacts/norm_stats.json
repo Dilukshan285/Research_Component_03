@@ -1,0 +1,10 @@
+{
+  "ef_mean": 55.777643,
+  "ef_std": 12.406359,
+  "pixel_mean": 0.128799,
+  "pixel_std": 0.195979,
+  "source": "exact_full_decode_train",
+  "n_frames_per_video": 16,
+  "n_videos_sampled": 7465,
+  "n_train_pixels": 16499624960
+}
