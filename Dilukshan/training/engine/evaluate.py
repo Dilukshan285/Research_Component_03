@@ -22,7 +22,7 @@ def run_inference(model, loader, cfg, device, ef_mean: float, ef_std: float,
                   max_batches: int = 0, desc: str = None) -> dict:
     model.eval()
     ef_true, ef_pred, y_true = [], [], []
-    ef_pred_std, ord_dists, class_dists = [], [], []
+    ef_pred_std, ord_dists, class_dists, aleatoric_stds = [], [], [], []
 
     use_amp = cfg.amp and device.type == "cuda"
     total = max_batches if max_batches else len(loader)
@@ -44,7 +44,7 @@ def run_inference(model, loader, cfg, device, ef_mean: float, ef_std: float,
         # large effective batch (for example 4 videos x 10 views).  Forward in
         # bounded chunks and then aggregate exactly at video level.
         forward_batch = max(1, int(getattr(cfg, "tta_forward_batch", cfg.batch_size)))
-        z_chunks, dist_chunks, class_chunks = [], [], []
+        z_chunks, dist_chunks, class_chunks, var_chunks = [], [], [], []
         for start in range(0, len(vid), forward_batch):
             chunk = vid[start:start + forward_batch]
             with torch.autocast(device_type=device.type, enabled=use_amp):
@@ -54,9 +54,15 @@ def run_inference(model, loader, cfg, device, ef_mean: float, ef_std: float,
             # v2 forward returns an aux dict; v1 returns a feature tensor.
             if isinstance(aux, dict) and aux.get("class_logits") is not None:
                 class_chunks.append(F.softmax(aux["class_logits"].float(), dim=1))
+            # Learned (aleatoric) predictive variance from the log-variance head,
+            # trained by the Gaussian NLL term.  Exposing it enables selective
+            # prediction; it is optional so v1 behaviour is unchanged.
+            if isinstance(aux, dict) and aux.get("log_var") is not None:
+                var_chunks.append(torch.exp(aux["log_var"].float()))
         ef_z = torch.cat(z_chunks, dim=0)
         dist = torch.cat(dist_chunks, dim=0)                   # (N,K)
         class_dist = torch.cat(class_chunks, dim=0) if class_chunks else None
+        aleatoric_var = torch.cat(var_chunks, dim=0) if var_chunks else None
 
         if multiview:
             ef_views = ef_z.view(B, V)
@@ -65,6 +71,9 @@ def run_inference(model, loader, cfg, device, ef_mean: float, ef_std: float,
             dist = dist.view(B, V, -1).mean(dim=1)
             if class_dist is not None:
                 class_dist = class_dist.view(B, V, -1).mean(dim=1)
+            if aleatoric_var is not None:
+                # Law of total variance: average the per-view aleatoric variance.
+                aleatoric_var = aleatoric_var.view(B, V).mean(dim=1)
         else:
             view_std = torch.zeros_like(ef_z)
 
@@ -77,6 +86,10 @@ def run_inference(model, loader, cfg, device, ef_mean: float, ef_std: float,
         ord_dists.append(dist.cpu().numpy())
         if class_dist is not None:
             class_dists.append(class_dist.cpu().numpy())
+        if aleatoric_var is not None:
+            # standardized variance -> EF units
+            aleatoric_stds.append(
+                np.sqrt(aleatoric_var.cpu().numpy()) * abs(float(ef_std)))
         ef_true.append(batch["ef"].detach().cpu().numpy())
         y_true.append(batch["ef_class"].detach().cpu().numpy())
 
@@ -96,4 +109,7 @@ def run_inference(model, loader, cfg, device, ef_mean: float, ef_std: float,
         class_dist = np.concatenate(class_dists, axis=0)
         out["class_dist"] = class_dist
         out["class_pred"] = class_dist.argmax(axis=1).astype(np.int64)
+    # Learned aleatoric std in EF units (uefnet_v2 only), for selective prediction.
+    if len(aleatoric_stds) == len(ord_dists) and aleatoric_stds:
+        out["ef_aleatoric_std"] = np.concatenate(aleatoric_stds)
     return out
