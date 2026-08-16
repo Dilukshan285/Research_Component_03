@@ -140,10 +140,12 @@ class TrainConfig:
     ema_decay: float = 0.999        # ~ averages last 1/(1-decay) optimiser steps
 
     # -------------------------------------------------------------- eval
-    n_tta_clips: int = 5            # multi-clip test-time augmentation
+    # These defaults match the values used for every reported result, so the
+    # documented command reproduces the published numbers without extra flags.
+    n_tta_clips: int = 10           # multi-clip test-time augmentation
     tta_forward_batch: int = 8      # cap flattened views per forward pass (OOM-safe)
     eval_use_keyframes: bool = False  # False avoids privileged tracing annotations
-    early_stop_patience: int = 12   # on val min-per-class recall
+    early_stop_patience: int = 18   # on val min-per-class recall
 
     # ------------------------------------------------------------ runtime
     # Windows spawn workers each re-import torch/torchvision (~1-2GB RSS), so keep

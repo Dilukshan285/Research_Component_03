@@ -29,6 +29,9 @@ def parse_args():
     ap.add_argument("--num-workers", type=int, default=0)
     ap.add_argument("--device", choices=["cuda", "cpu"], default=None)
     ap.add_argument("--out", default=None, help="output json path (default: outputs/ensemble_report.json)")
+    ap.add_argument("--save-predictions", action="store_true",
+                    help="also write per-study predictions (.npz) so subgroup and "
+                         "paired-significance analysis can run without re-inference")
     return ap.parse_args()
 
 
@@ -108,6 +111,7 @@ def average_predictions(pred_list):
 def main():
     a = parse_args()
     from engine.calibrate import calibrate, apply_frozen_strategy
+    from data.dataset import EchoClipDataset
     from engine.metrics import classify_ef, classification_metrics, regression_metrics
     from core.common import write_json_atomic
 
@@ -165,6 +169,26 @@ def main():
         regression=reg, classification=cls,
         clinical_reference=dict(regression=clin_reg, classification=clin_cls)))
     print(f"\n  report -> {out_path}")
+
+    if a.save_predictions:
+        # Per-study arrays, in dataset order, so subgroup and paired-significance
+        # analysis can be run later without repeating inference.
+        ds_order = EchoClipDataset(a.split, CFG, train=False, n_views=1).files
+        pred_path = str(CFG.TRAIN_DIR / "outputs" /
+                        f"predictions_{a.split.lower()}_{'_'.join(a.runs)}.npz")
+        np.savez_compressed(
+            pred_path,
+            file_name=np.asarray(ds_order, dtype=object),
+            y_true=test_ens["y_true"], ef_true=test_ens["ef_true"],
+            ef_pred_raw=np.asarray(frozen["ef_raw"], dtype=np.float64),
+            ef_pred_calibrated=ef_used,
+            y_pred_operational=y_pred, y_pred_clinical=clinical_pred,
+            ef_pred_std=test_ens.get("ef_pred_std", np.zeros(len(y_pred))),
+            ord_dist=test_ens.get("ord_dist", np.zeros((len(y_pred), CFG.n_classes))),
+            class_dist=test_ens.get("class_dist", np.zeros((len(y_pred), CFG.n_classes))),
+            strategy=np.asarray(calibration["best_strategy"]),
+            runs=np.asarray(a.runs, dtype=object))
+        print(f"  predictions -> {pred_path}")
     print("=====================================================")
 
 

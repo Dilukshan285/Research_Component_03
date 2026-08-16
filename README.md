@@ -89,9 +89,11 @@ A five-stage pipeline converts raw AVI studies into a verified frame cache and a
 |---|---|---|
 | 1 | Scan the cohort, join `FileList.csv` with `VolumeTracings.csv`, validate EF ranges and split labels | candidate index |
 | 2 | Decode every study to grayscale, resize to 112 × 112, verify frame counts against metadata | decoded frames |
-| 3 | Compute normalisation statistics by **exact full decode** of the training split (16.5 × 10⁹ pixels) | `pixel_mean` 0.1288, `pixel_std` 0.1960, `ef_mean` 55.78, `ef_std` 12.41 |
+| 3 | EF statistics over the TRAIN split; pixel statistics first estimated from 16 uniformly-sampled frames per video, then **refined by stage 4 over all cached TRAIN pixels** (16,499,624,960) | `pixel_mean` 0.1288, `pixel_std` 0.1960, `ef_mean` 55.78, `ef_std` 12.41 |
 | 4 | Write `uint8` arrays to disk and record cache paths | `cache/videos/*.npy` |
 | 5 | Verify every cached study reloads, matches its recorded length, and carries a valid label | audit + verification reports |
+
+**Normalisation-statistics provenance.** Three numbers describe different computations and should not be confused: `norm_stats.json` records `n_videos_sampled = 7465` (all TRAIN studies) and `n_train_pixels = 16,499,624,960` (every cached TRAIN pixel, the stage-4 refinement). Separately, `stage5_verify.py` recomputes pixel statistics on a `--stats-sample` subsample (default 512 videos, 51,380,224 pixels) purely as a **drift check**, and reports `drift_mean = 0.001022` against a 0.02 tolerance. The subsample figure is a verification artefact, not the statistic used for training.
 
 **Manifest.** One row per study with `FileName`, `Split`, `EF`, `ef_class`, `FPS`, `NumberOfFrames`, `ed_frame`, `es_frame`, `class_weight`, `sample_weight`, `ef_density_weight`, `cache_path`, `cached_ok`. All 10,030 studies passed verification with zero decode failures.
 
@@ -253,7 +255,9 @@ The protocol is designed so results survive independent replication.
 5. **Label-free inference.** Expert ED/ES tracings are used for training-time sampling only, never at evaluation, since they are unavailable for a new clinical study.
 6. **Uncertainty reported** — Wilson intervals on every per-class recall; split-conformal intervals on EF.
 
-**Statistical treatment.** Per-class recalls are reported with 95 % Wilson score intervals, which are appropriate for binomial proportions at small counts (Severe has 83 test studies). No paired significance test is performed between configurations, because the ablations differ by design rather than by sample and share the same test set; differences are therefore reported as effect sizes with intervals rather than as p-values. Where an interval is wide — notably Severe at ±9.5 % — that width is stated rather than suppressed.
+**Statistical treatment.** Per-class recalls are reported with 95 % Wilson score intervals, which are appropriate for binomial proportions at small counts (Severe has 83 test studies). Where an interval is wide — notably Severe at ±9.5 % — that width is stated rather than suppressed.
+
+Because every configuration is evaluated on the *same* test studies, comparisons between them use **paired** tests rather than two independent intervals: a paired bootstrap over studies (10,000 resamples, identical indices for both systems) for MAE, accuracy and balanced accuracy, and an **exact binomial McNemar test** on discordant classifications. These are implemented in `engine/robustness.py` and run via `run_robustness.py --compare-with` (§13.5). Reported ablation deltas should be quoted with the paired interval, not as bare differences.
 
 ---
 
@@ -458,7 +462,7 @@ With reported inter-observer variability of 4–5 EF points [2], the floor is **
 ```
 Dilukshan/
 ├── preprocessing/
-│   ├── run_all.py                 pipeline driver
+│   ├── run_preprocessing.py       pipeline driver (stages 0-5)
 │   ├── stage1_scan.py … stage5_verify.py
 │   ├── build_camus.py             CAMUS → EchoNet format + intensity harmonization
 │   ├── utils/sampling.py          cycle-aware sampling + motion channel (shared with training)
@@ -483,11 +487,13 @@ Dilukshan/
     │   ├── evaluate.py            multi-clip TTA inference
     │   ├── calibrate.py           strategy fitting, thresholds, conformal, temperature
     │   ├── metrics.py             per-class metrics, Wilson intervals, bootstrap CIs
-    │   └── selective.py           selective prediction / abstention
+    │   ├── selective.py           selective prediction / abstention
+    │   └── robustness.py          acquisition subgroups, paired bootstrap, exact McNemar
     ├── run_train.py               training entry point
     ├── run_eval.py                frozen-strategy test evaluation
     ├── run_ensemble.py            multi-seed ensemble evaluation
-    └── run_selective.py           coverage–recall analysis
+    ├── run_selective.py           coverage–recall analysis
+    └── run_robustness.py          subgroup robustness + paired significance tests
 ```
 
 ---
@@ -521,7 +527,7 @@ Place EchoNet at `Dilukshan/Dataset/` (`FileList.csv`, `VolumeTracings.csv`, `Vi
 
 ```bash
 cd Dilukshan/preprocessing
-python run_all.py                    # decode, verify, cache, build manifest
+python run_preprocessing.py          # stages 0-5: audit, labels, keyframes, stats, cache, verify
 python build_camus.py                # convert + harmonise CAMUS (optional but recommended)
 ```
 
@@ -548,11 +554,26 @@ python run_train.py --resume --run-name uefnet_v3b
 ```bash
 python run_train.py --calibrate-only --run-name uefnet_v3 --n-tta 10   # per member
 python run_eval.py     --run-name uefnet_v3 --n-tta 10                 # single model
-python run_ensemble.py --runs uefnet_v3 uefnet_v3b uefnet_v3c --n-tta 10   # primary result
+python run_ensemble.py --runs uefnet_v3 uefnet_v3b uefnet_v3c --n-tta 10     --save-predictions                                                     # primary result
 python run_selective.py --runs uefnet_v3 uefnet_v3b uefnet_v3c --n-tta 10 --plot
 ```
 
-### 13.5 Outputs
+### 13.5 Robustness and significance analysis
+
+`--save-predictions` writes per-study arrays so the analyses below need no re-inference:
+
+```bash
+# acquisition-subgroup robustness for the ensemble
+python run_robustness.py     --predictions outputs/predictions_test_uefnet_v3_uefnet_v3b_uefnet_v3c.npz
+
+# paired significance test: ensemble vs single model
+python run_ensemble.py --runs uefnet_v3 --n-tta 10 --save-predictions     --out outputs/single_model.json
+python run_robustness.py     --predictions outputs/predictions_test_uefnet_v3_uefnet_v3b_uefnet_v3c.npz     --compare-with outputs/predictions_test_uefnet_v3.npz
+```
+
+Reports paired-bootstrap confidence intervals and p-values on MAE, accuracy and balanced accuracy, plus an exact McNemar test on discordant classifications. Because both systems are evaluated on the same studies, the paired form is the correct instrument; two independent intervals would understate the evidence.
+
+### 13.6 Outputs
 
 ```
 outputs/<run>/best.pt, last.pt, config.json, norm_stats.json,
@@ -618,7 +639,10 @@ All hyperparameters live in `training/config.py` and are serialised with each ru
 4. **Single-cohort evaluation.** CAMUS is used for training only; no external cohort is held out for testing.
 5. **Geographic representativeness.** Both datasets originate from single institutions in the United States and France. Performance on other populations is not established.
 6. **Precision on the interior classes is low** (Moderate 0.434, Mild 0.413) — a direct consequence of optimising worst-class recall under heavy imbalance. Applications prioritising precision would select a different operating point.
-7. **Not a certified medical device.** Decision support only.
+7. **No demographic fairness analysis is possible on this cohort.** EchoNet-Dynamic's `FileList.csv` carries only `FileName, EF, ESV, EDV, FrameHeight, FrameWidth, FPS, NumberOfFrames, Split` — there are **no age, sex or ethnicity fields**. Subgroup robustness is therefore assessed over *acquisition* characteristics (frame rate, recording length, ventricular volume) via `run_robustness.py`; demographic fairness is **not claimed and not assessable** here, and would require a cohort that carries those attributes.
+8. **`uefnet_v3c` was stopped at epoch 29 of a scheduled 45.** Its validation minimum-recall peaked at epoch 29 (0.604) and had not improved for 8 subsequent epochs while validation MAE drifted upward (4.130 → 4.201), so `best.pt` already held the peak and the remaining epochs were not run. Its calibrated validation performance (min-recall 0.697, MAE 4.045) is in line with the two members that completed the full schedule, and all three were selected by the same frozen criterion. This is stated rather than presented as a completed run.
+9. **The four-component platform (§4.1 of the proposal) is design intent, not implemented integration.** This repository contains no interface, adapter or contract with Components 01/02/04; those exist in separate repositories. Component 03 is self-contained and consumes only decoded video.
+10. **Not a certified medical device.** Decision support only.
 
 ---
 

@@ -7,3 +7,4 @@ scipy>=1.11           # LDS kernel smoothing
 opencv-python>=4.9    # motion channel / clip decode (shared with preprocessing)
 tqdm>=4.65            # progress bars
 matplotlib>=3.7       # training curves + confusion matrix plots
+# nibabel>=5.0 is required only by preprocessing/build_camus.py (CAMUS conversion)
