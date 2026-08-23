@@ -153,9 +153,17 @@ def compare(baseline: str, challenger: str) -> None:
     print("  ensemble headline. A difference here is an architecture effect;")
     print("  the ensemble figure also contains variance reduction.")
     print()
-    print("  For a paired significance test on the same studies:")
-    print("    python run_robustness.py --run-name %s --compare-with %s"
-          % (challenger, baseline))
+    print("  For a paired significance test on the same studies, save per-study")
+    print("  predictions once per system, then compare them:")
+    print("    python run_ensemble.py --runs %s --n-tta 10 --save-predictions \\"
+          % baseline)
+    print("        --out outputs/single_%s.json" % baseline)
+    print("    python run_ensemble.py --runs %s --n-tta 10 --save-predictions \\"
+          % challenger)
+    print("        --out outputs/single_%s.json" % challenger)
+    print("    python run_robustness.py \\")
+    print("        --predictions outputs/predictions_test_%s.npz \\" % challenger)
+    print("        --compare-with outputs/predictions_test_%s.npz" % baseline)
     print("=" * 74)
 
 
