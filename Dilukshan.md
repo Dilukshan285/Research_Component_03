@@ -337,6 +337,7 @@ These disagree by ~15× in video count and ~320× in pixel count. **[inferred]**
 
 - **FACT (`README.md` §13.3):** "Approximately 20 hours per run on an RTX 4060."
 - **FACT (per-epoch timings logged in `outputs/<run>/train_log.csv`, `sec` column):** ~1,730–1,930 s per epoch across runs.
+- **FACT (measured, backbone ablation — §16.1):** at the shipped input geometry with AMP, `r2plus1d_18` runs at **1.84 s/step** peaking at **4.22 GB**; `r3d_18` at **0.262 s/step** peaking at **1.86 GB**. End-to-end: **23.5 h against 4.02 h** for the same 45-epoch schedule. This closes the peak-VRAM half of the gap noted below.
 - **FACT (proposal §13.2):** stage timings for preprocessing declared as ~6 min (preprocess), ~10 s (split).
 - **⚠️ NOT LOGGED:** total wall-clock across all experiments, peak GPU memory, and energy are **not** recorded anywhere. Observed GPU memory during a run was 6.3/8.0 GB (session observation, not a repo artifact). **Recommend logging peak VRAM and cumulative compute now, not at write-up time.**
 
@@ -492,6 +493,7 @@ These disagree by ~15× in video count and ~320× in pixel count. **[inferred]**
 | Deferred vs immediate re-weighting | MAE 5.44 (drw=0) | 4.29 (drw=15) | ✅ Fully (corroborated by `uefnet_r2p1d` vs `uefnet_drw` runs) |
 | CAMUS co-training | Moderate 0.53 | 0.62 | ⚠️ **Confounded** — README §8 itself labels this "matched epochs across runs, not single-variable" |
 | Selective prediction | min-rec 0.723 @100 % | 0.706 @88.4 % | ✅ Fully (negative result) |
+| **Backbone: R(2+1)D-18 → R3D-18** | MAE 4.1417, bal-acc 0.6533 | MAE 4.1175, bal-acc 0.6790 | ✅ **Fully** — matched seed/epochs/data/heads/loss, identical decision rule; **not significant** (p = 0.889). See §16.1 |
 
 **⚠️ ABLATIONS THAT DO NOT EXIST — suggested, given current code structure:**
 
@@ -506,6 +508,46 @@ These disagree by ~15× in video count and ~320× in pixel count. **[inferred]**
 | **Harmonization, isolated** | `build_camus.py --no-harmonize` then retrain — directly tests the C3 shortcut hypothesis. Flag exists. |
 
 **Each of these costs ~20 h of training** on the documented hardware, except the calibration ones which are ~10 min.
+
+---
+
+### 16.1 Backbone ablation — does the R(2+1)D factorisation actually help? (`outputs/uefnet_r3d/`)
+
+**Motivation.** The R(2+1)D-18 backbone was adopted from the EchoNet-Dynamic benchmark (Ouyang et al. 2020), whose own ablation found it best for EF regression. That is a sound starting point, but it is someone else's result on someone else's formulation. This ablation tests it under *this* component's four-head ordinal design, CAMUS co-training and calibration.
+
+**Design.** One variable changes: `--backbone r3d_18` against the shipped `r2plus1d_18`. Seed (1337), epoch schedule (45), clip geometry, heads, losses, co-training manifests and calibration procedure are all matched. `r3d_18` is the un-factorised baseline R(2+1)D was designed to beat (Tran et al., CVPR 2018) at near-matched capacity — **33.4 M parameters against 31.5 M** — so the comparison isolates the factorisation rather than confounding it with model size.
+
+The comparison is **single model vs single model**. It is deliberately *not* run against the three-seed ensemble headline (MAE 3.979), which would read a variance-reduction effect as an architecture effect.
+
+**Result A — matched decision rule.** Both systems scored under `raw_regression_published_boundaries`, identical for both, so this isolates the architecture:
+
+| Metric | R(2+1)D-18 (`uefnet_v3`) | R3D-18 (`uefnet_r3d`) | Δ |
+|---|---|---|---|
+| MAE (EF points) | 4.1417 | **4.1175** | −0.024 |
+| R² | 0.8042 | **0.8044** | +0.0002 |
+| Overall accuracy | 0.7987 | **0.8089** | +0.0102 |
+| Balanced accuracy | 0.6533 | **0.6790** | +0.0257 |
+| Min-class recall | 0.4935 | **0.5455** | +0.0520 |
+
+**Result B — each system under its own VAL-selected calibration.** The end-to-end, deployment-realistic comparison; paired tests over the same 1,277 studies (`outputs/robustness_report.json`):
+
+| Metric | R(2+1)D-18 | R3D-18 | Δ | 95 % CI | p |
+|---|---|---|---|---|---|
+| MAE | 4.1384 | 4.1300 | −0.0084 | [−0.131, +0.117] | **0.889** |
+| Overall accuracy | 0.7212 | 0.7338 | +0.0125 | [−0.007, +0.032] | 0.217 |
+| Balanced accuracy | 0.7298 | 0.7120 | −0.0179 | [−0.047, +0.010] | 0.216 |
+| Exact McNemar | 71 R(2+1)D-only correct | 87 R3D-only correct | 158 discordant | — | 0.233 |
+
+Paired bootstrap, 10,000 resamples (2,000 for balanced accuracy); both systems resampled on identical study indices.
+
+**⚠️ Caveat on Result B.** The two runs did not select the same calibration strategy on VAL — `uefnet_v3` selected `reg_operational_thresholds`, `uefnet_r3d` selected `reg_operational_expanded`. Result B therefore compares *best-configured against best-configured*, which is the right question for deployment but bundles architecture with calibration choice. Result A, computed under one rule for both, is the clean architecture comparison. **The two framings agree**, which is what makes the conclusion safe to state.
+
+**Conclusion.** No metric reaches significance under either framing; every confidence interval spans zero and every point difference is ≤ 0.05. **The two architectures are statistically indistinguishable on this cohort.** R(2+1)D is retained because it preserves comparability with the published EchoNet-Dynamic result — not because it measurably outperforms the un-factorised baseline here.
+
+**Cost.** Measured on the documented RTX 4060 Laptop at the shipped input geometry (8 × 2 × 32 × 112 × 112, AMP on): R(2+1)D-18 runs at **1.84 s/step** with **4.22 GB** peak activation memory, against R3D-18's **0.262 s/step** and **1.86 GB**. End-to-end the two runs took **23.5 h against 4.02 h** for the same 45-epoch schedule. The wall-clock ratio (≈ 6×) is smaller than the GPU-only ratio (≈ 7×) because at 0.262 s/step R3D outruns the four-worker data pipeline and idles waiting for clips. Mechanically, the factorisation replaces each 3×3×3 convolution with a (1,3,3) spatial and a (3,1,1) temporal convolution, raising the backbone from **20 to 37 `Conv3d`** and **20 to 37 `BatchNorm3d`** layers and producing an intermediate tensor **1.8–2.25× wider than the block's own output**. The workload is memory-bandwidth-bound, so that intermediate traffic — not arithmetic — dominates.
+
+**Reproduce:** `python run_backbone_ablation.py` (train, evaluate, compare), or `--compare-only` if both runs already exist.
+
 
 ---
 
@@ -572,6 +614,7 @@ These disagree by ~15× in video count and ~320× in pixel count. **[inferred]**
 | `uefnet_drw` | 4.502 | 0.777 | 0.689 | 0.702 | 0.651 | 0.647 | [0.651, 0.740, 0.743, 0.674] |
 | `uefnet_v3` | 4.138 | 0.804 | 0.721 | 0.730 | 0.687 | 0.679 | [0.687, 0.766, 0.755, 0.711] |
 | `uefnet_v3` (pre-calibration-fix) | 4.166 | — | 0.742 | 0.708 | 0.590 | — | [0.590, 0.740, 0.747, 0.756] |
+| `uefnet_r3d` (backbone ablation, §16.1) | 4.130 | 0.803 | 0.734 | 0.712 | 0.651 | 0.669 | [0.651, 0.753, 0.693, 0.751] |
 
 ### 18.3 Selective prediction (`outputs/selective_report.json`)
 

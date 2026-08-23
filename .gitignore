@@ -42,6 +42,8 @@ Dilukshan/training/outputs/**
 # Preprocessing artifacts: keep stats, drop the giant manifests
 Dilukshan/preprocessing/artifacts/manifest.csv
 Dilukshan/preprocessing/artifacts/camus_manifest.csv
+# ...and the pre-repair backups repair_manifest_paths.py leaves behind
+*.absolute.bak
 
 # ============================================================================
 #  Python

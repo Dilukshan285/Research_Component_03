@@ -23,7 +23,11 @@ same heads, same loss, same calibration procedure.
 The comparison is SINGLE MODEL vs SINGLE MODEL:
 
     uefnet_v3  (R(2+1)D, seed 1337)   MAE 4.138, min-recall 0.687
-    uefnet_r3d (R3D,     seed 1337)   ?
+    uefnet_r3d (R3D,     seed 1337)   MAE 4.130, min-recall 0.651
+
+Neither difference is significant: paired bootstrap over the same 1,277 studies
+gives p = 0.889 on MAE and p = 0.217 on accuracy, and exact McNemar over 158
+discordant studies gives p = 0.233. The architectures are indistinguishable here.
 
 NOT against the three-seed ensemble headline (MAE 3.979, min-recall 0.723).
 Comparing one model to an ensemble would read a variance-reduction effect as an
@@ -31,9 +35,14 @@ architecture effect, which is the one mistake this experiment must not make.
 
 COST
 ----
-Measured on an RTX 4060 Laptop with AMP: r3d_18 runs at 0.58 s/step against
-r2plus1d_18's 1.55 s, so a full 45-epoch schedule is roughly 9 hours against
-23.5. One overnight run.
+Measured end-to-end on an RTX 4060 Laptop with AMP: the r3d_18 run took 4.02 h
+against r2plus1d_18's 23.5 h for the same 45-epoch schedule.
+
+GPU-only, at the shipped input geometry (8 x 2 x 32 x 112 x 112), r3d_18 runs at
+0.262 s/step and 1.86 GB peak against r2plus1d_18's 1.840 s and 4.22 GB. The
+end-to-end ratio (~6x) is smaller than the per-step ratio (~7x) because at
+0.262 s/step r3d_18 outruns the four-worker data pipeline and idles waiting for
+clips -- the factorised model is GPU-bound, the un-factorised one is not.
 
 USAGE
 -----
@@ -186,8 +195,10 @@ def main() -> int:
     print("  matched     : seed, epochs, clip length, heads, loss, co-training")
     print("  varied      : backbone only")
     if not args.compare_only and not args.smoke:
-        # Measured at 0.58 s/step for r3d_18 against 1.55 for r2plus1d_18.
-        hours = epochs * (0.7 if args.backbone == "r3d_18" else 0.95) / 3.0
+        # Measured wall-clock per epoch: 4.02 h / 45 for r3d_18, 23.5 h / 45
+        # for r2plus1d_18. mc3_18 is unmeasured; r3d_18 is the closest proxy.
+        per_epoch = 0.089 if args.backbone in ("r3d_18", "mc3_18") else 0.52
+        hours = epochs * per_epoch
         print("  estimated   : ~%.0f h. Safe to interrupt; re-run with --resume." % hours)
     print("=" * 74)
 
