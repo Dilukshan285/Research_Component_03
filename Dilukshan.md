@@ -493,7 +493,7 @@ These disagree by ~15× in video count and ~320× in pixel count. **[inferred]**
 | Deferred vs immediate re-weighting | MAE 5.44 (drw=0) | 4.29 (drw=15) | ✅ Fully (corroborated by `uefnet_r2p1d` vs `uefnet_drw` runs) |
 | CAMUS co-training | Moderate 0.53 | 0.62 | ⚠️ **Confounded** — README §8 itself labels this "matched epochs across runs, not single-variable" |
 | Selective prediction | min-rec 0.723 @100 % | 0.706 @88.4 % | ✅ Fully (negative result) |
-| **Backbone: R(2+1)D-18 → R3D-18** | MAE 4.1417, bal-acc 0.6533 | MAE 4.1175, bal-acc 0.6790 | ✅ **Fully** — matched seed/epochs/data/heads/loss, identical decision rule; **not significant** (p = 0.889). See §16.1 |
+| **Backbone: R(2+1)D-18 → R3D-18** | MAE 4.1417, bal-acc 0.6533 | MAE 4.1175, bal-acc 0.6790 | ⚠️ **Confounded** — two further variables moved with the backbone (`logit_adjustment_tau` 0.5 → 0.0, `n_tta_clips` 5 → 10). Result is a null either way, but not single-variable. See §16.1 |
 
 **⚠️ ABLATIONS THAT DO NOT EXIST — suggested, given current code structure:**
 
@@ -515,7 +515,18 @@ These disagree by ~15× in video count and ~320× in pixel count. **[inferred]**
 
 **Motivation.** The R(2+1)D-18 backbone was adopted from the EchoNet-Dynamic benchmark (Ouyang et al. 2020), whose own ablation found it best for EF regression. That is a sound starting point, but it is someone else's result on someone else's formulation. This ablation tests it under *this* component's four-head ordinal design, CAMUS co-training and calibration.
 
-**Design.** One variable changes: `--backbone r3d_18` against the shipped `r2plus1d_18`. Seed (1337), epoch schedule (45), clip geometry, heads, losses, co-training manifests and calibration procedure are all matched. `r3d_18` is the un-factorised baseline R(2+1)D was designed to beat (Tran et al., CVPR 2018) at near-matched capacity — **33.4 M parameters against 31.5 M** — so the comparison isolates the factorisation rather than confounding it with model size.
+**Design.** The intent was that one variable changes: `--backbone r3d_18` against the shipped `r2plus1d_18`, with seed (1337), epoch schedule (45), clip geometry, heads, losses, co-training manifests and calibration procedure all matched. `r3d_18` is the un-factorised baseline R(2+1)D was designed to beat (Tran et al., CVPR 2018) at near-matched capacity — **33.4 M parameters against 31.5 M** — so the comparison isolates the factorisation rather than confounding it with model size.
+
+> **⚠️ The executed run did not achieve that.** `run_backbone_ablation.py` forwarded `--extra-manifest` from the baseline snapshot but nothing else, so the challenger fell back to `config.py` defaults for two settings the baseline had overridden on the command line:
+>
+> | Setting | Baseline (`uefnet_v3`) | Challenger (`uefnet_r3d`) | Affects |
+> |---|---|---|---|
+> | `logit_adjustment_tau` | 0.5 | **0.0** | the training loss |
+> | `n_tta_clips` | 5 | **10** | model selection and per-run calibration |
+>
+> Three variables moved, not one. The conclusion below is unchanged — every metric is a null under both framings, and the two settings push in opposite directions — but **this run does not support the claim that the backbone alone was tested.** It is reported here as a confounded comparison rather than withdrawn, because the null is still informative about the joint change.
+>
+> The replacement is `run_backbone_ensemble.py`, which inherits every hyperparameter from the baseline snapshot via an explicit config-key-to-flag table and **refuses to report any comparison until a fail-closed parity audit confirms only the backbone and seed differ.** It trains three matched R3D seeds so the comparison is ensemble against ensemble rather than single model against single model.
 
 The comparison is **single model vs single model**. It is deliberately *not* run against the three-seed ensemble headline (MAE 3.979), which would read a variance-reduction effect as an architecture effect.
 

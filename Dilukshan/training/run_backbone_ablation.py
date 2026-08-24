@@ -87,7 +87,8 @@ def parse_args():
                         help="default: the baseline run's seed, so it is matched")
     parser.add_argument("--epochs", type=int, default=None,
                         help="default: the baseline run's epoch count")
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=None,
+                        help="default: the baseline's, which keeps the RNG stream matched")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--compare-only", action="store_true",
                         help="skip training; both runs must already exist")
@@ -192,7 +193,7 @@ def main() -> int:
           % (args.baseline, snapshot.get("backbone"), snapshot.get("seed")))
     print("  challenger  : %s  (%s, seed %s)" % (challenger, args.backbone, seed))
     print("  epochs      : %s" % epochs)
-    print("  matched     : seed, epochs, clip length, heads, loss, co-training")
+    print("  matched     : every hyperparameter recorded in the baseline snapshot")
     print("  varied      : backbone only")
     if not args.compare_only and not args.smoke:
         # Measured wall-clock per epoch: 4.02 h / 45 for r3d_18, 23.5 h / 45
@@ -203,17 +204,16 @@ def main() -> int:
     print("=" * 74)
 
     if not args.compare_only:
-        cmd = [sys.executable, "run_train.py",
-               "--run-name", challenger,
-               "--backbone", args.backbone,
-               "--v2",
-               "--seed", str(seed),
-               "--epochs", str(epochs),
-               "--num-workers", str(args.num_workers)]
-        # Co-training manifests must match the baseline or the comparison is
-        # confounded by training data rather than architecture.
-        for manifest in snapshot.get("extra_manifests") or []:
-            cmd += ["--extra-manifest", manifest]
+        # Every hyperparameter is inherited from the baseline snapshot via the
+        # shared table. Listing flags by hand here is exactly how the first
+        # version of this ablation silently let logit_adjustment_tau and
+        # n_tta_clips fall back to config.py defaults the baseline had
+        # overridden, making the comparison two-variable without saying so.
+        from run_backbone_ensemble import train_command
+        cmd = train_command(challenger, args.backbone, seed, snapshot,
+                            args.num_workers, args.smoke)
+        if epochs != snapshot.get("epochs"):
+            cmd += ["--epochs", str(epochs)]      # explicit override wins
         if args.resume:
             # On resume the snapshot supplies backbone/seed/epochs, and passing
             # them again would trip run_train's change guards.
@@ -234,6 +234,25 @@ def main() -> int:
         if run([sys.executable, "run_eval.py", "--run-name", challenger]) != 0:
             print("[ablation] evaluation failed; run run_eval.py manually.")
             return 1
+
+    # Fail closed: a comparison is only a backbone ablation if the backbone is
+    # the only thing that changed. Check before printing numbers, not after.
+    from run_backbone_ensemble import audit_parity, rule
+    print("\n" + rule())
+    print("  CONFIG PARITY AUDIT")
+    print(rule())
+    parity_ok, lines = audit_parity(args.baseline, [challenger])
+    print("\n".join(lines))
+    print(rule())
+    if not parity_ok:
+        print("  FAIL -- these runs differ in more than the backbone, so this is")
+        print("  not a backbone ablation. Retrain the challenger with the")
+        print("  inherited configuration, or state the confound wherever you")
+        print("  quote the result.")
+        print(rule())
+        return 2
+    print("  PASS -- only the backbone and seed differ.")
+    print(rule())
 
     compare(args.baseline, challenger)
     return 0
