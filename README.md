@@ -356,7 +356,7 @@ Every design decision was measured on data never used to fit it.
 | **Ensembling 2 → 3 seeds** | MAE 3.994, min-rec 0.711 | MAE 3.979, min-rec 0.723 | −0.015 / +0.012 | ✅ Fully |
 | **C4 — CAMUS co-training** | Moderate 0.53 | Moderate 0.62 | +0.09 | ⚠️ Matched epochs across runs, not single-variable |
 | **Deferred vs immediate re-weighting** | MAE 5.44 | MAE 4.29 | −1.15 | ✅ Fully |
-| **Backbone R(2+1)D-18 → R3D-18** | MAE 4.1417, bal-acc 0.6533 | MAE 4.1175, bal-acc 0.6790 | −0.024 / +0.026 — **not significant**, p = 0.889 | ⚠️ **Confounded** — `logit_adjustment_tau` (0.5 → 0.0) and `n_tta_clips` (5 → 10) moved with the backbone. Null either way, but not single-variable. Matched rerun: `run_backbone_ensemble.py` |
+| **Backbone R(2+1)D-18 → R3D-18**, 3 seeds each | acc 0.7298, bal-acc 0.7366 | acc 0.7063, bal-acc 0.7145 | −0.0235 / −0.0221 — **significant**, p = 0.0064 / 0.0310 | ✅ **Fully** — three matched seeds per architecture, every hyperparameter inherited from the baseline snapshot, verified by a fail-closed parity audit (`run_backbone_ensemble.py`) |
 
 ### 8.1 Minimum-recall progression
 

@@ -379,6 +379,8 @@ def parse_args():
                         help="continue an interrupted job (safe to pass always)")
     parser.add_argument("--compare-only", action="store_true",
                         help="skip training and ensembling; report what exists")
+    parser.add_argument("--rebuild-ensemble", action="store_true",
+                        help="regenerate the challenger ensemble even if its report exists")
     parser.add_argument("--audit-only", action="store_true",
                         help="only check config parity, then exit")
     parser.add_argument("--skip-audit", action="store_true",
@@ -522,7 +524,14 @@ def main() -> int:
     print(rule())
 
     # ---------------- phase 4: build the challenger ensemble ---------------- #
-    if not args.compare_only or not challenger_report.exists():
+    # Resume-consistent with the training phase: existing work is not redone.
+    # Ensembling is ~25 min of TTA inference, so silently repeating it on every
+    # invocation would make the script painful to re-run for the report alone.
+    if challenger_report.exists() and not args.rebuild_ensemble:
+        banner("CHALLENGER ENSEMBLE ALREADY BUILT")
+        print("  %s" % challenger_report.name)
+        print("  Pass --rebuild-ensemble to regenerate it.")
+    else:
         banner("ENSEMBLING %d %s MODELS" % (len(challengers), args.backbone))
         code = spawn([sys.executable, "run_ensemble.py",
                       "--runs", *challengers,
@@ -538,15 +547,49 @@ def main() -> int:
                      "%s x3" % snapshot.get("backbone", "baseline"),
                      "%s x3" % args.backbone)
 
-    banner("NEXT: PAIRED SIGNIFICANCE TESTS")
-    print("  Point differences above are not evidence on their own. Run the")
-    print("  paired tests over the same studies:\n")
-    print("    python run_robustness.py \\")
-    print("        --predictions outputs/predictions_test_%s.npz \\" % challengers[0])
-    print("        --compare-with outputs/predictions_test_%s.npz \\" % members[0])
-    print("        --out outputs/robustness_ensemble_%s.json" % short)
-    print("\n  That reports paired-bootstrap CIs and p-values for MAE, accuracy")
-    print("  and balanced accuracy, plus an exact McNemar test.")
+    # run_ensemble.py names its prediction dump after every run that went into
+    # it: predictions_<split>_<run1>_<run2>_<run3>.npz. Naming a single member
+    # here would silently compare one model against an ensemble, which is the
+    # exact error this script exists to avoid.
+    def predictions_path(runs: list[str]) -> Path:
+        return OUT_DIR / ("predictions_test_%s.npz" % "_".join(runs))
+
+    challenger_npz = predictions_path(challengers)
+    baseline_npz = predictions_path(members)
+    robustness_out = OUT_DIR / ("robustness_ensemble_%s.json" % short)
+
+    banner("PAIRED SIGNIFICANCE TESTS")
+    if not baseline_npz.exists():
+        # The shipped baseline ensemble was built without --save-predictions,
+        # so there is nothing to pair against yet. Rebuilding is deterministic:
+        # the calibration is frozen, so the report reproduces and only the
+        # missing .npz is added.
+        print("  The baseline ensemble has no saved per-study predictions, so the")
+        print("  paired test cannot run yet. Rebuild it (deterministic -- the")
+        print("  frozen calibration reproduces the published report):\n")
+        print("    python run_ensemble.py --runs %s \\" % " ".join(members))
+        print("        --n-tta %d --save-predictions \\" % ensemble_n_tta)
+        print("        --out outputs/ensemble_report_baseline_verify.json")
+        print("\n  Writing to a verify path rather than over ensemble_report.json")
+        print("  keeps the published headline intact and lets you diff the two.")
+        print("\n  Then:\n")
+        print("    python run_robustness.py \\")
+        print("        --predictions outputs/%s \\" % challenger_npz.name)
+        print("        --compare-with outputs/%s \\" % baseline_npz.name)
+        print("        --out outputs/%s" % robustness_out.name)
+        print(rule())
+        return 0
+
+    print("  Pairing %d studies, ensemble against ensemble.\n" % (read_json(
+        challenger_report) or {}).get("n", 0))
+    code = spawn([sys.executable, "run_robustness.py",
+                  "--predictions", str(challenger_npz),
+                  "--compare-with", str(baseline_npz),
+                  "--out", str(robustness_out)])
+    if code != 0:
+        print("\n[ensemble-ablation] the paired test failed; run it manually.")
+        return 1
+    print("\n[ensemble-ablation] paired report -> %s" % robustness_out)
     print(rule())
     return 0
 

@@ -493,7 +493,8 @@ These disagree by ~15× in video count and ~320× in pixel count. **[inferred]**
 | Deferred vs immediate re-weighting | MAE 5.44 (drw=0) | 4.29 (drw=15) | ✅ Fully (corroborated by `uefnet_r2p1d` vs `uefnet_drw` runs) |
 | CAMUS co-training | Moderate 0.53 | 0.62 | ⚠️ **Confounded** — README §8 itself labels this "matched epochs across runs, not single-variable" |
 | Selective prediction | min-rec 0.723 @100 % | 0.706 @88.4 % | ✅ Fully (negative result) |
-| **Backbone: R(2+1)D-18 → R3D-18** | MAE 4.1417, bal-acc 0.6533 | MAE 4.1175, bal-acc 0.6790 | ⚠️ **Confounded** — two further variables moved with the backbone (`logit_adjustment_tau` 0.5 → 0.0, `n_tta_clips` 5 → 10). Result is a null either way, but not single-variable. See §16.1 |
+| **Backbone: R(2+1)D-18 → R3D-18** (3 seeds each) | acc 0.7298, bal-acc 0.7366 | acc 0.7063, bal-acc 0.7145 | ✅ **Fully** — three matched seeds per architecture, every hyperparameter inherited, verified by a fail-closed parity audit. **R(2+1)D significantly better**: accuracy p = 0.0064, balanced accuracy p = 0.0310, McNemar p = 0.0064. See §16.1 |
+| *(superseded)* single-seed backbone run | MAE 4.1417 | MAE 4.1175 | ⚠️ **Confounded and underpowered** — `logit_adjustment_tau` and `n_tta_clips` moved with the backbone, and one seed per side cannot separate architecture from seed variance. Retained as the counter-example that motivated the audit |
 
 **⚠️ ABLATIONS THAT DO NOT EXIST — suggested, given current code structure:**
 
@@ -530,30 +531,34 @@ These disagree by ~15× in video count and ~320× in pixel count. **[inferred]**
 
 The comparison is **single model vs single model**. It is deliberately *not* run against the three-seed ensemble headline (MAE 3.979), which would read a variance-reduction effect as an architecture effect.
 
-**Result A — matched decision rule.** Both systems scored under `raw_regression_published_boundaries`, identical for both, so this isolates the architecture:
+**PRIMARY RESULT — three seeds per architecture, matched configuration.**
 
-| Metric | R(2+1)D-18 (`uefnet_v3`) | R3D-18 (`uefnet_r3d`) | Δ |
-|---|---|---|---|
-| MAE (EF points) | 4.1417 | **4.1175** | −0.024 |
-| R² | 0.8042 | **0.8044** | +0.0002 |
-| Overall accuracy | 0.7987 | **0.8089** | +0.0102 |
-| Balanced accuracy | 0.6533 | **0.6790** | +0.0257 |
-| Min-class recall | 0.4935 | **0.5455** | +0.0520 |
+`run_backbone_ensemble.py` trained three R3D seeds (1337, 2024, 777) matching the three shipped R(2+1)D members seed-for-seed, with every hyperparameter inherited from the baseline snapshot and a fail-closed parity audit confirming that only the backbone and the seed differ. Both ensembles use 10 TTA views, and both independently selected `reg_operational_expanded` on VAL.
 
-**Result B — each system under its own VAL-selected calibration.** The end-to-end, deployment-realistic comparison; paired tests over the same 1,277 studies (`outputs/robustness_report.json`):
-
-| Metric | R(2+1)D-18 | R3D-18 | Δ | 95 % CI | p |
+| Metric | R(2+1)D-18 ×3 | R3D-18 ×3 | Δ | 95 % CI | p |
 |---|---|---|---|---|---|
-| MAE | 4.1384 | 4.1300 | −0.0084 | [−0.131, +0.117] | **0.889** |
-| Overall accuracy | 0.7212 | 0.7338 | +0.0125 | [−0.007, +0.032] | 0.217 |
-| Balanced accuracy | 0.7298 | 0.7120 | −0.0179 | [−0.047, +0.010] | 0.216 |
-| Exact McNemar | 71 R(2+1)D-only correct | 87 R3D-only correct | 158 discordant | — | 0.233 |
+| MAE (EF points) | **3.9794** | 4.0330 | +0.0536 | [−0.041, +0.148] | 0.270 |
+| Overall accuracy | **0.7298** | 0.7063 | −0.0235 | [−0.040, −0.008] | **0.0064** |
+| Balanced accuracy | **0.7366** | 0.7145 | −0.0221 | [−0.044, −0.002] | **0.0310** |
+| Min-class recall | **0.7229** | 0.6975 | −0.0254 | — | — |
+| Macro-F1 | **0.6844** | 0.6642 | −0.0202 | — | — |
+| R² | **0.8183** | 0.8117 | −0.0066 | — | — |
+| Exact McNemar | **72** correct-only | 42 correct-only | 114 discordant | — | **0.0064** |
 
-Paired bootstrap, 10,000 resamples (2,000 for balanced accuracy); both systems resampled on identical study indices.
+Paired bootstrap over identical study indices, 10,000 resamples (`outputs/robustness_ensemble_r3d.json`).
 
-**⚠️ Caveat on Result B.** The two runs did not select the same calibration strategy on VAL — `uefnet_v3` selected `reg_operational_thresholds`, `uefnet_r3d` selected `reg_operational_expanded`. Result B therefore compares *best-configured against best-configured*, which is the right question for deployment but bundles architecture with calibration choice. Result A, computed under one rule for both, is the clean architecture comparison. **The two framings agree**, which is what makes the conclusion safe to state.
+**R(2+1)D-18 wins every metric, and three of the four significance tests reject the null at α = 0.05.**
 
-**Conclusion.** No metric reaches significance under either framing; every confidence interval spans zero and every point difference is ≤ 0.05. **The two architectures are statistically indistinguishable on this cohort.** R(2+1)D is retained because it preserves comparability with the published EchoNet-Dynamic result — not because it measurably outperforms the un-factorised baseline here.
+**Interpretation.** The split matters: classification improves significantly while MAE does not (p = 0.270). The factorisation is not making the regression more accurate on average — it is resolving the class boundaries better. That is consistent with what the factorisation does. Separating each 3×3×3 convolution into a (1,3,3) spatial and a (3,1,1) temporal step gives the network an explicit temporal-only stage, and ejection fraction is a temporal quantity: the grade depends on how the ventricle moves between end-diastole and end-systole, not on either frame alone. Meanwhile average EF error is dominated by the ~37 % of studies lying within one MAE of a threshold (§10.2), where a small gain moves studies across a boundary without moving MAE much.
+
+**Baseline reproduction.** Rebuilding the shipped ensemble from its three frozen members reproduced the published regression and classification blocks bit-for-bit (`outputs/ensemble_report_baseline_verify.json` against `outputs/ensemble_report.json`), independently confirming the determinism claimed in `README.md` §8.2.
+
+**SUPERSEDED — the first single-model comparison** (`outputs/uefnet_r3d/`). The original one-seed-per-architecture run found no significant difference anywhere (MAE p = 0.889, accuracy p = 0.217, McNemar p = 0.233) and marginally favoured R3D. It is superseded for two independent reasons, and both were needed to reverse the conclusion:
+
+1. **It was confounded** — `logit_adjustment_tau` (0.5 → 0.0) and `n_tta_clips` (5 → 10) moved with the backbone, as described above.
+2. **It was underpowered** — one seed per side cannot separate an architecture effect from seed variance; three per side can.
+
+The superseded run is kept in the repository rather than deleted, because the discrepancy between it and the corrected comparison is itself the evidence that the parity audit was necessary.
 
 **Cost.** Measured on the documented RTX 4060 Laptop at the shipped input geometry (8 × 2 × 32 × 112 × 112, AMP on): R(2+1)D-18 runs at **1.84 s/step** with **4.22 GB** peak activation memory, against R3D-18's **0.262 s/step** and **1.86 GB**. End-to-end the two runs took **23.5 h against 4.02 h** for the same 45-epoch schedule. The wall-clock ratio (≈ 6×) is smaller than the GPU-only ratio (≈ 7×) because at 0.262 s/step R3D outruns the four-worker data pipeline and idles waiting for clips. Mechanically, the factorisation replaces each 3×3×3 convolution with a (1,3,3) spatial and a (3,1,1) temporal convolution, raising the backbone from **20 to 37 `Conv3d`** and **20 to 37 `BatchNorm3d`** layers and producing an intermediate tensor **1.8–2.25× wider than the block's own output**. The workload is memory-bandwidth-bound, so that intermediate traffic — not arithmetic — dominates.
 
