@@ -84,7 +84,11 @@ The following are **[inferred]** from what the code actually measures, and **req
 
 1. **We derive ordinal supervision targets from the EF label's own measurement noise.** *(13 words)*
    → Formula: `s_k = 1 − Φ((t_k − EF)/σ)`, σ = 4 EF points.
-   → **Novel.** What makes it different: standard ordinal training uses hard class membership; this treats the *label* as a noisy measurement and produces graded targets. Implemented in `losses/losses.py L30-36 soft_cumulative_targets()`. **⚠️ Author must verify no prior echo work does this** (§3).
+   → **Refinement, not a new method.** The literature check the write-up flagged as missing has now been done, and the closest prior art is **Díaz & Marathe, "Soft Labels for Ordinal Regression", CVPR 2019** — which derives soft ordinal targets rather than hard class membership. Claiming soft ordinal targets as novel would not survive a panel that knows it.
+
+→ What survives as this component's own: the width of the soft target is **not a tuned hyperparameter**. It is fixed at σ = 4 EF points because that is the published inter-observer variability of the clinical measurement itself, so the supervision signal is calibrated to how precisely the label was ever knowable. Díaz & Marathe tune their smoothing; this derives it from the instrument. Implemented in `losses/losses.py L30-36 soft_cumulative_targets()`.
+
+→ **How to say it:** *"Soft ordinal targets are Díaz & Marathe 2019. What is ours is deriving the smoothing width from the label's own measurement noise rather than tuning it — the target is as sharp as the ground truth deserves, and no sharper."*
 
 2. **We enforce ordinal rank consistency structurally via positively-constrained cut-point gaps.**
    → **Adapted.** Adapted from CORAL (Cao et al. 2020, `README.md` ref [12]), which learns independent per-threshold biases that may violate ordering. Modification: single score compared against `anchor + cumsum(softplus(gaps))`, so monotonicity holds by construction (`models/uef_net.py L33-57 OrderedCoralHead`).
